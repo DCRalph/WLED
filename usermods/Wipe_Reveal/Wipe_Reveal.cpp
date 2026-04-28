@@ -1,5 +1,8 @@
 #include "wled.h"
 
+#include "WipeRevealStyles.h"
+#include "WipeRevealTypes.h"
+
 /*
  * Wipe Reveal usermod
  *
@@ -13,6 +16,8 @@ class WipeRevealUsermod : public Usermod {
     static const char _trigger[];
     static const char _position[];
     static const char _style[];
+    static const char _styleOn[];
+    static const char _styleOff[];
     static const char _easing[];
     static const char _duration[];
     static const char _dropoff[];
@@ -21,262 +26,76 @@ class WipeRevealUsermod : public Usermod {
     static const char _running[];
     static const char _progress[];
 
-    enum RevealPosition : uint8_t {
-      RevealStart = 0,
-      RevealCenter = 1,
-      RevealEnd = 2
-    };
-
-    enum RevealEasing : uint8_t {
-      EaseLinear = 0,
-      EaseIn = 1,
-      EaseOut = 2,
-      EaseInOut = 3
-    };
-
-    enum RevealStyle : uint8_t {
-      StyleWipe = 0,
-      StyleBounce = 1
-    };
-
     bool enabled = true;
     bool turnOn = true;
-    bool alwaysAnimate = false;
-    bool running = false;
-    bool revealingOff = false;
     bool suppressPowerChange = false;
     byte lastBri = 0;
-    uint8_t position = RevealCenter;
-    uint8_t style = StyleWipe;
-    uint8_t easing = EaseLinear;
-    uint16_t durationMs = 1200;
-    uint16_t dropoffPx = 8;
-
-    uint8_t activePosition = RevealCenter;
-    uint8_t activeStyle = StyleWipe;
-    uint8_t activeEasing = EaseLinear;
-    uint16_t activeDurationMs = 1200;
-    uint16_t activeDropoffPx = 8;
-    unsigned long startTime = 0;
-    unsigned long lastTriggerFrame = 0;
     bool initDone = false;
+    WipeReveal::RevealConfig config;
+    WipeReveal::RevealAnimationState animation;
 
-    static uint8_t parsePosition(const char* value, uint8_t fallback) {
-      if (!value) return fallback;
-      if (!strcmp_P(value, PSTR("start"))) return RevealStart;
-      if (!strcmp_P(value, PSTR("center"))) return RevealCenter;
-      if (!strcmp_P(value, PSTR("end"))) return RevealEnd;
-      return fallback;
+    WipeReveal::RevealOptions onOptions() const {
+      WipeReveal::RevealOptions options = config.options;
+      options.style = config.styleOn;
+      return options;
     }
 
-    static uint8_t parseEasing(const char* value, uint8_t fallback) {
-      if (!value) return fallback;
-      if (!strcmp_P(value, PSTR("linear"))) return EaseLinear;
-      if (!strcmp_P(value, PSTR("ease-in")) || !strcmp_P(value, PSTR("easeIn"))) return EaseIn;
-      if (!strcmp_P(value, PSTR("ease-out")) || !strcmp_P(value, PSTR("easeOut"))) return EaseOut;
-      if (!strcmp_P(value, PSTR("ease-in-out")) || !strcmp_P(value, PSTR("easeInOut"))) return EaseInOut;
-      return fallback;
+    WipeReveal::RevealOptions offOptions() const {
+      WipeReveal::RevealOptions options = config.options;
+      options.style = config.styleOff;
+      return options;
     }
 
-    static uint8_t parseStyle(const char* value, uint8_t fallback) {
-      if (!value) return fallback;
-      if (!strcmp_P(value, PSTR("wipe"))) return StyleWipe;
-      if (!strcmp_P(value, PSTR("bounce"))) return StyleBounce;
-      return fallback;
-    }
+    void applyConfiguredStyles(JsonObjectConst obj, uint8_t& styleOn, uint8_t& styleOff) {
+      JsonVariantConst styleOnValue = obj[FPSTR(_styleOn)];
+      if (!styleOnValue.isNull()) {
+        styleOn = WipeReveal::parseRevealStyleJson(styleOnValue, styleOn);
+      }
 
-    static const __FlashStringHelper* positionName(uint8_t value) {
-      switch (value) {
-        case RevealStart:  return F("start");
-        case RevealEnd:    return F("end");
-        case RevealCenter:
-        default:           return F("center");
+      JsonVariantConst styleOffValue = obj[FPSTR(_styleOff)];
+      if (!styleOffValue.isNull()) {
+        styleOff = WipeReveal::parseRevealStyleJson(styleOffValue, styleOff);
       }
     }
 
-    static const __FlashStringHelper* easingName(uint8_t value) {
-      switch (value) {
-        case EaseIn:     return F("ease-in");
-        case EaseOut:    return F("ease-out");
-        case EaseInOut:  return F("ease-in-out");
-        case EaseLinear:
-        default:         return F("linear");
-      }
-    }
-
-    static const __FlashStringHelper* styleName(uint8_t value) {
-      switch (value) {
-        case StyleBounce: return F("bounce");
-        case StyleWipe:
-        default:          return F("wipe");
-      }
-    }
-
-    static uint8_t parsePositionJson(JsonVariantConst value, uint8_t fallback) {
-      if (value.is<const char*>()) return parsePosition(value.as<const char*>(), fallback);
-      if (value.is<int>()) return constrain(value.as<int>(), RevealStart, RevealEnd);
-      return fallback;
-    }
-
-    static uint8_t parseEasingJson(JsonVariantConst value, uint8_t fallback) {
-      if (value.is<const char*>()) return parseEasing(value.as<const char*>(), fallback);
-      if (value.is<int>()) return constrain(value.as<int>(), EaseLinear, EaseInOut);
-      return fallback;
-    }
-
-    static uint8_t parseStyleJson(JsonVariantConst value, uint8_t fallback) {
-      if (value.is<const char*>()) return parseStyle(value.as<const char*>(), fallback);
-      if (value.is<int>()) return constrain(value.as<int>(), StyleWipe, StyleBounce);
-      return fallback;
-    }
-
-    static uint16_t easedProgress(uint16_t progress, uint8_t ease) {
-      const uint32_t inv = 0xFFFFU - progress;
-      switch (ease) {
-        case EaseIn:
-          return (uint64_t(progress) * progress) / 0xFFFFU;
-        case EaseOut:
-          return 0xFFFFU - ((uint64_t(inv) * inv) / 0xFFFFU);
-        case EaseInOut:
-          if (progress < 0x8000U) return (2ULL * progress * progress) / 0xFFFFU;
-          return 0xFFFFU - ((2ULL * inv * inv) / 0xFFFFU);
-        case EaseLinear:
-        default:
-          return progress;
-      }
-    }
-
-    static uint16_t revealExtent(uint16_t len, uint8_t pos) {
-      if (pos != RevealCenter) return len;
-
-      const uint16_t leftCenter = (len - 1) / 2;
-      const uint16_t rightCenter = len / 2;
-      const uint16_t leftExtent = leftCenter + 1;
-      const uint16_t rightExtent = len - rightCenter;
-      return max(leftExtent, rightExtent);
-    }
-
-    static uint16_t distanceFromOrigin(uint16_t pixel, uint16_t len, uint8_t pos) {
-      switch (pos) {
-        case RevealStart:
-          return pixel;
-        case RevealEnd:
-          return len - 1 - pixel;
-        case RevealCenter:
-        default: {
-          const uint16_t leftCenter = (len - 1) / 2;
-          const uint16_t rightCenter = len / 2;
-          if (pixel < leftCenter) return leftCenter - pixel;
-          if (pixel > rightCenter) return pixel - rightCenter;
-          return 0;
-        }
-      }
-    }
-
-    static uint8_t scaleForDistance(uint16_t distance, uint32_t edge, uint16_t dropoff) {
-      if (dropoff == 0) return distance < edge ? 255 : 0;
-      if (edge <= distance) return 0;
-      if (edge >= uint32_t(distance) + dropoff) return 255;
-      return ((edge - distance) * 255U) / dropoff;
-    }
-
-    static uint8_t scaleForWindow(uint16_t distance, uint16_t start, uint16_t end, uint16_t dropoff) {
-      if (end < start) return 0;
-      if (dropoff == 0) return (distance >= start && distance <= end) ? 255 : 0;
-      if (distance < start) {
-        const uint16_t delta = start - distance;
-        if (delta >= dropoff) return 0;
-        return ((dropoff - delta) * 255U) / dropoff;
-      }
-      if (distance > end) {
-        const uint16_t delta = distance - end;
-        if (delta >= dropoff) return 0;
-        return ((dropoff - delta) * 255U) / dropoff;
-      }
-      return 255;
-    }
-
-    static uint16_t phaseProgress(uint16_t progress, uint8_t startUnit, uint8_t durationUnit) {
-      constexpr uint8_t totalUnits = 27;
-      const uint32_t start = (uint32_t(startUnit) * 0xFFFFU) / totalUnits;
-      const uint32_t stop = (uint32_t(startUnit + durationUnit) * 0xFFFFU) / totalUnits;
-      if (progress <= start) return 0;
-      if (progress >= stop) return 0xFFFFU;
-      return (uint32_t(progress - start) * 0xFFFFU) / (stop - start);
-    }
-
-    static uint8_t bounceScaleForDistance(uint16_t distance, uint16_t len, uint16_t progress, uint8_t ease, uint16_t dropoff) {
-      if (progress >= 0xFFFFU) return 255;
-
-      const uint16_t extent = revealExtent(len, RevealCenter);
-      uint16_t dashLength = len / 8;
-      if (dashLength < 2) dashLength = 2;
-      if (dashLength > 15) dashLength = 15;
-      uint16_t edgeStop = extent / 3;
-      if (edgeStop < 1) edgeStop = 1;
-      if (edgeStop > 15) edgeStop = 15;
-
-      if (progress < (6UL * 0xFFFFU) / 27U) {
-        const uint16_t p = easedProgress(phaseProgress(progress, 0, 6), ease);
-        const uint16_t dashEnd = (uint32_t(p) * extent) / 0xFFFFU;
-        const uint16_t dashStart = dashEnd > dashLength ? dashEnd - dashLength : 0;
-        return scaleForWindow(distance, dashStart, dashEnd, dropoff);
-      }
-
-      if (progress < (12UL * 0xFFFFU) / 27U) {
-        const uint16_t p = easedProgress(phaseProgress(progress, 6, 6), ease);
-        const uint16_t dashEnd = (uint32_t(0xFFFFU - p) * extent) / 0xFFFFU;
-        const uint16_t dashStart = dashEnd > dashLength ? dashEnd - dashLength : 0;
-        return scaleForWindow(distance, dashStart, dashEnd, dropoff);
-      }
-
-      if (progress < (18UL * 0xFFFFU) / 27U) {
-        const uint16_t p = easedProgress(phaseProgress(progress, 12, 6), ease);
-        const uint32_t edge = (uint32_t(p) * uint32_t(extent + dropoff + 1)) / 0xFFFFU;
-        return scaleForDistance(distance, edge, dropoff);
-      }
-
-      if (progress < (21UL * 0xFFFFU) / 27U) return 255;
-
-      const uint16_t p = easedProgress(phaseProgress(progress, 21, 6), ease);
-      const uint16_t cutoff = (uint32_t(p) * (extent > edgeStop ? extent - edgeStop : extent)) / 0xFFFFU;
-      return distance >= cutoff ? 255 : scaleForWindow(distance, cutoff, cutoff + dropoff, dropoff);
-    }
-
-    void applyOverrides(JsonObjectConst obj, uint8_t& pos, uint8_t& styleValue, uint8_t& ease, uint16_t& dur, uint16_t& dropoff, bool& always) {
+    void applyOverrides(JsonObjectConst obj, WipeReveal::RevealOptions& options, bool& always) {
       JsonVariantConst positionValue = obj[FPSTR(_position)];
       if (!positionValue.isNull()) {
-        pos = parsePositionJson(positionValue, pos);
+        options.position = WipeReveal::parseRevealPositionJson(positionValue, options.position);
       }
-      JsonVariantConst styleJsonValue = obj[FPSTR(_style)];
-      if (!styleJsonValue.isNull()) {
-        styleValue = parseStyleJson(styleJsonValue, styleValue);
+
+      JsonVariantConst styleValue = obj[FPSTR(_style)];
+      if (!styleValue.isNull()) {
+        options.style = WipeReveal::parseRevealStyleJson(styleValue, options.style);
       }
+
       JsonVariantConst easingValue = obj[FPSTR(_easing)];
       if (!easingValue.isNull()) {
-        ease = parseEasingJson(easingValue, ease);
+        options.easing = WipeReveal::parseRevealEasingJson(easingValue, options.easing);
       }
+
       if (obj[FPSTR(_alwaysAnimate)].is<bool>()) {
         always = obj[FPSTR(_alwaysAnimate)].as<bool>();
       }
-      dur = constrain(obj[FPSTR(_duration)] | dur, 1, 60000);
-      dropoff = constrain(obj[FPSTR(_dropoff)] | dropoff, 0, 255);
+
+      options.durationMs = constrain(obj[FPSTR(_duration)] | options.durationMs, 1, 60000);
+      options.dropoffPx = constrain(obj[FPSTR(_dropoff)] | options.dropoffPx, 0, 255);
     }
 
-    void startReveal(uint8_t pos, uint8_t styleValue, uint8_t ease, uint16_t dur, uint16_t dropoff, bool reverse) {
+    void startReveal(const WipeReveal::RevealOptions& options, bool reverse) {
       if (!enabled) return;
 
-      activePosition = constrain(pos, RevealStart, RevealEnd);
-      activeStyle = constrain(styleValue, StyleWipe, StyleBounce);
-      activeEasing = constrain(ease, EaseLinear, EaseInOut);
-      activeDurationMs = dur ? dur : 1;
-      activeDropoffPx = dropoff;
-      startTime = millis();
-      lastTriggerFrame = 0;
-      running = true;
-      revealingOff = reverse;
+      animation.options.position = constrain(options.position, WipeReveal::RevealStart, WipeReveal::RevealEnd);
+      animation.options.style = WipeReveal::revealStyleForId(options.style).id;
+      animation.options.easing = constrain(options.easing, WipeReveal::EaseLinear, WipeReveal::EaseInOut);
+      animation.options.durationMs = options.durationMs ? options.durationMs : 1;
+      animation.options.dropoffPx = options.dropoffPx;
+      animation.startTime = millis();
+      animation.lastTriggerFrame = 0;
+      animation.running = true;
+      animation.reversing = reverse;
 
-      if (turnOn && bri == 0 && !revealingOff) {
+      if (turnOn && bri == 0 && !animation.reversing) {
         bri = briLast;
         colorUpdated(CALL_MODE_DIRECT_CHANGE);
       } else {
@@ -286,8 +105,8 @@ class WipeRevealUsermod : public Usermod {
     }
 
     void completeOffReveal() {
-      running = false;
-      revealingOff = false;
+      animation.running = false;
+      animation.reversing = false;
       suppressPowerChange = true;
       bri = 0;
       offMode = true;
@@ -298,10 +117,10 @@ class WipeRevealUsermod : public Usermod {
     }
 
     uint8_t progressPercent() const {
-      if (!running) return 0;
-      const unsigned long elapsed = millis() - startTime;
-      if (elapsed >= activeDurationMs) return 100;
-      return (elapsed * 100UL) / activeDurationMs;
+      if (!animation.running) return 0;
+      const unsigned long elapsed = millis() - animation.startTime;
+      if (elapsed >= animation.options.durationMs) return 100;
+      return (elapsed * 100UL) / animation.options.durationMs;
     }
 
   public:
@@ -311,12 +130,12 @@ class WipeRevealUsermod : public Usermod {
     }
 
     void loop() override {
-      if (!running) return;
+      if (!animation.running) return;
 
       const unsigned long now = millis();
-      if (now - startTime >= activeDurationMs) {
-        running = false;
-        if (revealingOff) {
+      if (now - animation.startTime >= animation.options.durationMs) {
+        animation.running = false;
+        if (animation.reversing) {
           completeOffReveal();
         }
         strip.trigger();
@@ -324,24 +143,27 @@ class WipeRevealUsermod : public Usermod {
         return;
       }
 
-      if (now - lastTriggerFrame >= 10) {
-        lastTriggerFrame = now;
+      if (now - animation.lastTriggerFrame >= 10) {
+        animation.lastTriggerFrame = now;
         strip.trigger();
       }
     }
 
     void handleOverlayDraw() override {
-      if (!enabled || !running) return;
+      if (!enabled || !animation.running) return;
 
-      const unsigned long elapsed = millis() - startTime;
-      if (elapsed >= activeDurationMs) {
-        running = false;
-        if (revealingOff) {
+      const unsigned long elapsed = millis() - animation.startTime;
+      if (elapsed >= animation.options.durationMs) {
+        animation.running = false;
+        if (animation.reversing) {
           completeOffReveal();
         }
         return;
       }
 
+      const WipeReveal::RevealStyleDescriptor& style = WipeReveal::revealStyleForId(animation.options.style);
+      const uint16_t linearProgress = (elapsed * 0xFFFFUL) / animation.options.durationMs;
+      const uint16_t progress = animation.reversing ? (0xFFFFU - linearProgress) : linearProgress;
       const unsigned totalLen = strip.getLengthTotal();
 
       for (unsigned segmentIndex = 0; segmentIndex < strip.getSegmentsNum(); segmentIndex++) {
@@ -351,19 +173,11 @@ class WipeRevealUsermod : public Usermod {
         const uint16_t len = seg.length();
         if (len == 0) continue;
 
-        const uint16_t linearProgress = (elapsed * 0xFFFFUL) / activeDurationMs;
-        const uint16_t progress = revealingOff ? (0xFFFFU - linearProgress) : linearProgress;
-        const uint16_t eased = easedProgress(progress, activeEasing);
-        const uint32_t wipeEdge = (uint32_t(eased) * uint32_t(revealExtent(len, activePosition) + activeDropoffPx + 1)) / 0xFFFFUL;
-
         for (uint16_t pixel = 0; pixel < len; pixel++) {
           const unsigned absolutePixel = seg.start + pixel;
           if (absolutePixel >= totalLen) break;
 
-          const uint16_t distance = distanceFromOrigin(pixel, len, activePosition);
-          const uint8_t scale = activeStyle == StyleBounce
-            ? bounceScaleForDistance(distanceFromOrigin(pixel, len, RevealCenter), len, progress, activeEasing, activeDropoffPx)
-            : scaleForDistance(distance, wipeEdge, activeDropoffPx);
+          const uint8_t scale = style.renderScale(pixel, len, progress, animation.options);
           if (scale >= 255) continue;
 
           strip.setPixelColor(absolutePixel, color_fade(strip.getPixelColor(absolutePixel), scale, true));
@@ -377,11 +191,14 @@ class WipeRevealUsermod : public Usermod {
       JsonObject usermod = root[FPSTR(_name)];
       if (usermod.isNull()) usermod = root.createNestedObject(FPSTR(_name));
 
-      usermod[FPSTR(_running)] = running;
-      usermod[FPSTR(_position)] = positionName(running ? activePosition : position);
-      usermod[FPSTR(_style)] = styleName(running ? activeStyle : style);
-      usermod[FPSTR(_easing)] = easingName(running ? activeEasing : easing);
-      usermod[FPSTR(_alwaysAnimate)] = alwaysAnimate;
+      WipeReveal::RevealOptions currentOptions = animation.running ? animation.options : onOptions();
+      usermod[FPSTR(_running)] = animation.running;
+      usermod[FPSTR(_position)] = WipeReveal::revealPositionName(currentOptions.position);
+      usermod[FPSTR(_style)] = WipeReveal::revealStyleName(currentOptions.style);
+      usermod[FPSTR(_styleOn)] = WipeReveal::revealStyleName(config.styleOn);
+      usermod[FPSTR(_styleOff)] = WipeReveal::revealStyleName(config.styleOff);
+      usermod[FPSTR(_easing)] = WipeReveal::revealEasingName(currentOptions.easing);
+      usermod[FPSTR(_alwaysAnimate)] = config.alwaysAnimate;
       usermod[FPSTR(_progress)] = progressPercent();
     }
 
@@ -393,26 +210,33 @@ class WipeRevealUsermod : public Usermod {
 
       if (usermod[FPSTR(_enabled)].is<bool>()) enabled = usermod[FPSTR(_enabled)].as<bool>();
 
-      uint8_t pos = position;
-      uint8_t styleValue = style;
-      uint8_t ease = easing;
-      bool always = alwaysAnimate;
-      uint16_t dur = durationMs;
-      uint16_t dropoff = dropoffPx;
-      applyOverrides(usermod, pos, styleValue, ease, dur, dropoff, always);
-      alwaysAnimate = always;
+      WipeReveal::RevealOptions options = onOptions();
+      bool always = config.alwaysAnimate;
+      uint8_t styleOn = config.styleOn;
+      uint8_t styleOff = config.styleOff;
+      applyOverrides(usermod, options, always);
+      applyConfiguredStyles(usermod, styleOn, styleOff);
+      config.alwaysAnimate = always;
+      config.styleOn = WipeReveal::revealStyleForId(styleOn).id;
+      config.styleOff = WipeReveal::revealStyleForId(styleOff).id;
+      config.options.style = config.styleOn;
+      if (usermod[FPSTR(_style)].isNull()) {
+        options.style = config.styleOn;
+      }
 
       if (usermod[FPSTR(_trigger)].is<bool>() && usermod[FPSTR(_trigger)].as<bool>()) {
-        startReveal(pos, styleValue, ease, dur, dropoff, false);
+        startReveal(options, false);
       } else if (usermod[FPSTR(_trigger)].is<const char*>()) {
         const char* triggerValue = usermod[FPSTR(_trigger)].as<const char*>();
-        pos = parsePosition(triggerValue, pos);
-        styleValue = parseStyle(triggerValue, styleValue);
-        ease = parseEasing(triggerValue, ease);
-        if (!strcmp_P(triggerValue, PSTR("on")) || !strcmp_P(triggerValue, PSTR("start")) ||
-            !strcmp_P(triggerValue, PSTR("center")) || !strcmp_P(triggerValue, PSTR("end")) ||
-            parseStyle(triggerValue, 255) != 255 || parseEasing(triggerValue, 255) != 255) {
-          startReveal(pos, styleValue, ease, dur, dropoff, false);
+        options.position = WipeReveal::parseRevealPosition(triggerValue, options.position);
+        options.style = WipeReveal::parseRevealStyle(triggerValue, options.style);
+        options.easing = WipeReveal::parseRevealEasing(triggerValue, options.easing);
+
+        if (!strcmp_P(triggerValue, PSTR("on")) ||
+            WipeReveal::parseRevealPosition(triggerValue, 255) != 255 ||
+            WipeReveal::parseRevealStyle(triggerValue, 255) != 255 ||
+            WipeReveal::parseRevealEasing(triggerValue, 255) != 255) {
+          startReveal(options, false);
         }
       }
     }
@@ -434,32 +258,37 @@ class WipeRevealUsermod : public Usermod {
       action.trim();
       action.toLowerCase();
 
-      uint8_t pos = position;
-      uint8_t styleValue = style;
-      uint8_t ease = easing;
-      bool always = alwaysAnimate;
-      uint16_t dur = durationMs;
-      uint16_t dropoff = dropoffPx;
+      WipeReveal::RevealOptions options = onOptions();
+      bool always = config.alwaysAnimate;
+      uint8_t styleOn = config.styleOn;
+      uint8_t styleOff = config.styleOff;
 
-      if (action == "start" || action == "center" || action == "end") {
-        pos = parsePosition(action.c_str(), pos);
-      } else if (parseStyle(action.c_str(), 255) != 255) {
-        styleValue = parseStyle(action.c_str(), styleValue);
-      } else if (parseEasing(action.c_str(), 255) != 255) {
-        ease = parseEasing(action.c_str(), ease);
+      if (WipeReveal::parseRevealPosition(action.c_str(), 255) != 255) {
+        options.position = WipeReveal::parseRevealPosition(action.c_str(), options.position);
+      } else if (WipeReveal::parseRevealStyle(action.c_str(), 255) != 255) {
+        options.style = WipeReveal::parseRevealStyle(action.c_str(), options.style);
+      } else if (WipeReveal::parseRevealEasing(action.c_str(), 255) != 255) {
+        options.easing = WipeReveal::parseRevealEasing(action.c_str(), options.easing);
       } else if (action.startsWith("{")) {
         StaticJsonDocument<192> doc;
         DeserializationError error = deserializeJson(doc, payload);
         if (error) return false;
 
         JsonObjectConst obj = doc.as<JsonObjectConst>();
-        applyOverrides(obj, pos, styleValue, ease, dur, dropoff, always);
-        alwaysAnimate = always;
+        applyOverrides(obj, options, always);
+        applyConfiguredStyles(obj, styleOn, styleOff);
+        config.alwaysAnimate = always;
+        config.styleOn = WipeReveal::revealStyleForId(styleOn).id;
+        config.styleOff = WipeReveal::revealStyleForId(styleOff).id;
+        config.options.style = config.styleOn;
+        if (obj[FPSTR(_style)].isNull()) {
+          options.style = config.styleOn;
+        }
       } else if (action != "on" && action != "trigger" && action != "true" && action != "1") {
         return false;
       }
 
-      startReveal(pos, styleValue, ease, dur, dropoff, false);
+      startReveal(options, false);
       return true;
     }
 #endif
@@ -469,7 +298,7 @@ class WipeRevealUsermod : public Usermod {
         lastBri = bri;
         return;
       }
-      if (!enabled || !alwaysAnimate || mode == CALL_MODE_INIT) {
+      if (!enabled || !config.alwaysAnimate || mode == CALL_MODE_INIT) {
         lastBri = bri;
         return;
       }
@@ -479,12 +308,12 @@ class WipeRevealUsermod : public Usermod {
       const bool isOn = currentBri > 0;
 
       if (!wasOn && isOn) {
-        startReveal(position, style, easing, durationMs, dropoffPx, false);
+        startReveal(onOptions(), false);
       } else if (wasOn && !isOn) {
         bri = briLast;
         offMode = false;
         applyFinalBri();
-        startReveal(position, style, easing, durationMs, dropoffPx, true);
+        startReveal(offOptions(), true);
       }
 
       lastBri = bri;
@@ -493,13 +322,14 @@ class WipeRevealUsermod : public Usermod {
     void addToConfig(JsonObject& root) override {
       JsonObject top = root.createNestedObject(FPSTR(_name));
       top[FPSTR(_enabled)] = enabled;
-      top[FPSTR(_position)] = positionName(position);
-      top[FPSTR(_style)] = styleName(style);
-      top[FPSTR(_easing)] = easingName(easing);
-      top[FPSTR(_duration)] = durationMs;
-      top[FPSTR(_dropoff)] = dropoffPx;
+      top[FPSTR(_position)] = WipeReveal::revealPositionName(config.options.position);
+      top[FPSTR(_styleOn)] = WipeReveal::revealStyleName(config.styleOn);
+      top[FPSTR(_styleOff)] = WipeReveal::revealStyleName(config.styleOff);
+      top[FPSTR(_easing)] = WipeReveal::revealEasingName(config.options.easing);
+      top[FPSTR(_duration)] = config.options.durationMs;
+      top[FPSTR(_dropoff)] = config.options.dropoffPx;
       top[FPSTR(_turnOn)] = turnOn;
-      top[FPSTR(_alwaysAnimate)] = alwaysAnimate;
+      top[FPSTR(_alwaysAnimate)] = config.alwaysAnimate;
     }
 
     bool readFromConfig(JsonObject& root) override {
@@ -507,35 +337,53 @@ class WipeRevealUsermod : public Usermod {
       bool configComplete = !top.isNull();
 
       configComplete &= getJsonValue(top[FPSTR(_enabled)], enabled, true);
-      configComplete &= getJsonValue(top[FPSTR(_duration)], durationMs, 1200);
-      configComplete &= getJsonValue(top[FPSTR(_dropoff)], dropoffPx, 8);
+      configComplete &= getJsonValue(top[FPSTR(_duration)], config.options.durationMs, 1200);
+      configComplete &= getJsonValue(top[FPSTR(_dropoff)], config.options.dropoffPx, 8);
       configComplete &= getJsonValue(top[FPSTR(_turnOn)], turnOn, true);
-      configComplete &= getJsonValue(top[FPSTR(_alwaysAnimate)], alwaysAnimate, false);
+      configComplete &= getJsonValue(top[FPSTR(_alwaysAnimate)], config.alwaysAnimate, false);
 
       JsonVariantConst positionValue = top[FPSTR(_position)];
       if (!positionValue.isNull()) {
-        position = parsePositionJson(positionValue, RevealCenter);
+        config.options.position = WipeReveal::parseRevealPositionJson(positionValue, WipeReveal::RevealCenter);
       } else {
         configComplete = false;
-        position = RevealCenter;
-      }
-      JsonVariantConst styleValue = top[FPSTR(_style)];
-      if (!styleValue.isNull()) {
-        style = parseStyleJson(styleValue, StyleWipe);
-      } else {
-        configComplete = false;
-        style = StyleWipe;
-      }
-      JsonVariantConst easingValue = top[FPSTR(_easing)];
-      if (!easingValue.isNull()) {
-        easing = parseEasingJson(easingValue, EaseLinear);
-      } else {
-        configComplete = false;
-        easing = EaseLinear;
+        config.options.position = WipeReveal::RevealCenter;
       }
 
-      durationMs = constrain(durationMs, 1, 60000);
-      dropoffPx = constrain(dropoffPx, 0, 255);
+      uint8_t legacyStyle = WipeReveal::StyleWipe;
+      JsonVariantConst styleValue = top[FPSTR(_style)];
+      if (!styleValue.isNull()) {
+        legacyStyle = WipeReveal::parseRevealStyleJson(styleValue, WipeReveal::StyleWipe);
+      }
+
+      JsonVariantConst styleOnValue = top[FPSTR(_styleOn)];
+      if (!styleOnValue.isNull()) {
+        config.styleOn = WipeReveal::parseRevealStyleJson(styleOnValue, legacyStyle);
+      } else {
+        config.styleOn = legacyStyle;
+        configComplete = false;
+      }
+
+      JsonVariantConst styleOffValue = top[FPSTR(_styleOff)];
+      if (!styleOffValue.isNull()) {
+        config.styleOff = WipeReveal::parseRevealStyleJson(styleOffValue, legacyStyle);
+      } else {
+        config.styleOff = legacyStyle;
+        configComplete = false;
+      }
+
+      config.options.style = config.styleOn;
+
+      JsonVariantConst easingValue = top[FPSTR(_easing)];
+      if (!easingValue.isNull()) {
+        config.options.easing = WipeReveal::parseRevealEasingJson(easingValue, WipeReveal::EaseLinear);
+      } else {
+        configComplete = false;
+        config.options.easing = WipeReveal::EaseLinear;
+      }
+
+      config.options.durationMs = constrain(config.options.durationMs, 1, 60000);
+      config.options.dropoffPx = constrain(config.options.dropoffPx, 0, 255);
 
       return configComplete;
     }
@@ -545,15 +393,30 @@ class WipeRevealUsermod : public Usermod {
       oappend(F("let g=n=>document.getElementsByName('WipeReveal:'+n)[0];"));
       oappend(F("let v=n=>g(n)?g(n).value:null;"));
       oappend(F("let c=n=>g(n)&&g(n).type==='checkbox'?g(n).checked:false;"));
-      oappend(F("fetch(getURL('/json/state'),{method:'POST',body:JSON.stringify({WipeReveal:{trigger:true,position:v('position'),easing:v('easing'),style:v('style'),'duration-ms':parseInt(v('duration-ms')),'dropoff-px':parseInt(v('dropoff-px')),'always-animate':c('always-animate')}})});"));
+      oappend(F("fetch(getURL('/json/state'),{method:'POST',body:JSON.stringify({WipeReveal:{trigger:true,position:v('position'),easing:v('easing'),style:v('style-on'),'duration-ms':parseInt(v('duration-ms')),'dropoff-px':parseInt(v('dropoff-px')),'always-animate':c('always-animate')}})});"));
       oappend(F("}"));
       oappend(F("dd=addDropdown('")); oappend(String(FPSTR(_name)).c_str()); oappend(F("','")); oappend(String(FPSTR(_position)).c_str()); oappend(F("');"));
       oappend(F("addOption(dd,'Start','start');"));
       oappend(F("addOption(dd,'Center','center');"));
       oappend(F("addOption(dd,'End','end');"));
-      oappend(F("dd=addDropdown('")); oappend(String(FPSTR(_name)).c_str()); oappend(F("','")); oappend(String(FPSTR(_style)).c_str()); oappend(F("');"));
-      oappend(F("addOption(dd,'Wipe','wipe');"));
-      oappend(F("addOption(dd,'Bounce','bounce');"));
+      oappend(F("dd=addDropdown('")); oappend(String(FPSTR(_name)).c_str()); oappend(F("','")); oappend(String(FPSTR(_styleOn)).c_str()); oappend(F("');"));
+      for (uint8_t i = 0; i < WipeReveal::revealStyleCount(); i++) {
+        const WipeReveal::RevealStyleDescriptor& style = WipeReveal::revealStyleAt(i);
+        oappend(F("addOption(dd,'"));
+        oappend(style.label);
+        oappend(F("','"));
+        oappend(style.name);
+        oappend(F("');"));
+      }
+      oappend(F("dd=addDropdown('")); oappend(String(FPSTR(_name)).c_str()); oappend(F("','")); oappend(String(FPSTR(_styleOff)).c_str()); oappend(F("');"));
+      for (uint8_t i = 0; i < WipeReveal::revealStyleCount(); i++) {
+        const WipeReveal::RevealStyleDescriptor& style = WipeReveal::revealStyleAt(i);
+        oappend(F("addOption(dd,'"));
+        oappend(style.label);
+        oappend(F("','"));
+        oappend(style.name);
+        oappend(F("');"));
+      }
       oappend(F("dd=addDropdown('")); oappend(String(FPSTR(_name)).c_str()); oappend(F("','")); oappend(String(FPSTR(_easing)).c_str()); oappend(F("');"));
       oappend(F("addOption(dd,'Linear','linear');"));
       oappend(F("addOption(dd,'Ease In','ease-in');"));
@@ -562,7 +425,9 @@ class WipeRevealUsermod : public Usermod {
       oappend(F("addInfo('")); oappend(String(FPSTR(_name)).c_str()); oappend(F(":")); oappend(String(FPSTR(_enabled)).c_str()); oappend(F("',1,'<button type=\"button\" onclick=\"triggerWipeReveal()\">Trigger Wipe Reveal</button>');"));
       oappend(F("addInfo('")); oappend(String(FPSTR(_name)).c_str()); oappend(F(":")); oappend(String(FPSTR(_duration)).c_str()); oappend(F("',1,'Reveal animation duration in milliseconds.');"));
       oappend(F("addInfo('")); oappend(String(FPSTR(_name)).c_str()); oappend(F(":")); oappend(String(FPSTR(_dropoff)).c_str()); oappend(F("',1,'Soft edge width in pixels.');"));
-      oappend(F("addInfo('")); oappend(String(FPSTR(_name)).c_str()); oappend(F(":")); oappend(String(FPSTR(_alwaysAnimate)).c_str()); oappend(F("',1,'Animate on every power on and off. Off uses the reverse wipe.');"));
+      oappend(F("addInfo('")); oappend(String(FPSTR(_name)).c_str()); oappend(F(":")); oappend(String(FPSTR(_styleOn)).c_str()); oappend(F("',1,'Style used for manual trigger and power-on animation.');"));
+      oappend(F("addInfo('")); oappend(String(FPSTR(_name)).c_str()); oappend(F(":")); oappend(String(FPSTR(_styleOff)).c_str()); oappend(F("',1,'Style used for power-off animation when always animate is enabled.');"));
+      oappend(F("addInfo('")); oappend(String(FPSTR(_name)).c_str()); oappend(F(":")); oappend(String(FPSTR(_alwaysAnimate)).c_str()); oappend(F("',1,'Animate on every power on and off. Power off uses the selected off style in reverse.');"));
     }
 
     uint16_t getId() override {
@@ -575,6 +440,8 @@ const char WipeRevealUsermod::_enabled[]  PROGMEM = "enabled";
 const char WipeRevealUsermod::_trigger[]  PROGMEM = "trigger";
 const char WipeRevealUsermod::_position[] PROGMEM = "position";
 const char WipeRevealUsermod::_style[]    PROGMEM = "style";
+const char WipeRevealUsermod::_styleOn[]  PROGMEM = "style-on";
+const char WipeRevealUsermod::_styleOff[] PROGMEM = "style-off";
 const char WipeRevealUsermod::_easing[]   PROGMEM = "easing";
 const char WipeRevealUsermod::_duration[] PROGMEM = "duration-ms";
 const char WipeRevealUsermod::_dropoff[]  PROGMEM = "dropoff-px";
