@@ -34,6 +34,8 @@ struct RevealOptions {
 
 struct RevealConfig {
   RevealOptions options;
+  uint16_t durationOnMs = 1200;
+  uint16_t durationOffMs = 1200;
   uint8_t styleOn = StyleWipe;
   uint8_t styleOff = StyleWipe;
   bool alwaysAnimate = false;

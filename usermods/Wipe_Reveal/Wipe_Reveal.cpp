@@ -20,6 +20,8 @@ class WipeRevealUsermod : public Usermod {
     static const char _styleOff[];
     static const char _easing[];
     static const char _duration[];
+    static const char _durationOn[];
+    static const char _durationOff[];
     static const char _dropoff[];
     static const char _turnOn[];
     static const char _alwaysAnimate[];
@@ -37,12 +39,14 @@ class WipeRevealUsermod : public Usermod {
     WipeReveal::RevealOptions onOptions() const {
       WipeReveal::RevealOptions options = config.options;
       options.style = config.styleOn;
+      options.durationMs = config.durationOnMs;
       return options;
     }
 
     WipeReveal::RevealOptions offOptions() const {
       WipeReveal::RevealOptions options = config.options;
       options.style = config.styleOff;
+      options.durationMs = config.durationOffMs;
       return options;
     }
 
@@ -198,6 +202,9 @@ class WipeRevealUsermod : public Usermod {
       usermod[FPSTR(_styleOn)] = WipeReveal::revealStyleName(config.styleOn);
       usermod[FPSTR(_styleOff)] = WipeReveal::revealStyleName(config.styleOff);
       usermod[FPSTR(_easing)] = WipeReveal::revealEasingName(currentOptions.easing);
+      usermod[FPSTR(_duration)] = config.options.durationMs;
+      usermod[FPSTR(_durationOn)] = config.durationOnMs;
+      usermod[FPSTR(_durationOff)] = config.durationOffMs;
       usermod[FPSTR(_alwaysAnimate)] = config.alwaysAnimate;
       usermod[FPSTR(_progress)] = progressPercent();
     }
@@ -219,6 +226,17 @@ class WipeRevealUsermod : public Usermod {
       config.alwaysAnimate = always;
       config.styleOn = WipeReveal::revealStyleForId(styleOn).id;
       config.styleOff = WipeReveal::revealStyleForId(styleOff).id;
+      const JsonVariantConst durationOnValue = usermod[FPSTR(_durationOn)];
+      if (durationOnValue.is<int>()) {
+        config.durationOnMs = constrain(durationOnValue.as<int>(), 1, 60000);
+      }
+      const JsonVariantConst durationOffValue = usermod[FPSTR(_durationOff)];
+      if (durationOffValue.is<int>()) {
+        config.durationOffMs = constrain(durationOffValue.as<int>(), 1, 60000);
+      }
+      if (usermod[FPSTR(_duration)].isNull()) {
+        options.durationMs = config.durationOnMs;
+      }
       config.options.style = config.styleOn;
       if (usermod[FPSTR(_style)].isNull()) {
         options.style = config.styleOn;
@@ -280,6 +298,17 @@ class WipeRevealUsermod : public Usermod {
         config.alwaysAnimate = always;
         config.styleOn = WipeReveal::revealStyleForId(styleOn).id;
         config.styleOff = WipeReveal::revealStyleForId(styleOff).id;
+        const JsonVariantConst durationOnValue = obj[FPSTR(_durationOn)];
+        if (durationOnValue.is<int>()) {
+          config.durationOnMs = constrain(durationOnValue.as<int>(), 1, 60000);
+        }
+        const JsonVariantConst durationOffValue = obj[FPSTR(_durationOff)];
+        if (durationOffValue.is<int>()) {
+          config.durationOffMs = constrain(durationOffValue.as<int>(), 1, 60000);
+        }
+        if (obj[FPSTR(_duration)].isNull()) {
+          options.durationMs = config.durationOnMs;
+        }
         config.options.style = config.styleOn;
         if (obj[FPSTR(_style)].isNull()) {
           options.style = config.styleOn;
@@ -327,6 +356,8 @@ class WipeRevealUsermod : public Usermod {
       top[FPSTR(_styleOff)] = WipeReveal::revealStyleName(config.styleOff);
       top[FPSTR(_easing)] = WipeReveal::revealEasingName(config.options.easing);
       top[FPSTR(_duration)] = config.options.durationMs;
+      top[FPSTR(_durationOn)] = config.durationOnMs;
+      top[FPSTR(_durationOff)] = config.durationOffMs;
       top[FPSTR(_dropoff)] = config.options.dropoffPx;
       top[FPSTR(_turnOn)] = turnOn;
       top[FPSTR(_alwaysAnimate)] = config.alwaysAnimate;
@@ -338,9 +369,16 @@ class WipeRevealUsermod : public Usermod {
 
       configComplete &= getJsonValue(top[FPSTR(_enabled)], enabled, true);
       configComplete &= getJsonValue(top[FPSTR(_duration)], config.options.durationMs, 1200);
+      const uint16_t durationDefault = config.options.durationMs;
+      configComplete &= getJsonValue(top[FPSTR(_durationOn)], config.durationOnMs, durationDefault);
+      configComplete &= getJsonValue(top[FPSTR(_durationOff)], config.durationOffMs, durationDefault);
       configComplete &= getJsonValue(top[FPSTR(_dropoff)], config.options.dropoffPx, 8);
       configComplete &= getJsonValue(top[FPSTR(_turnOn)], turnOn, true);
       configComplete &= getJsonValue(top[FPSTR(_alwaysAnimate)], config.alwaysAnimate, false);
+
+      if (top[FPSTR(_duration)].isNull()) {
+        config.options.durationMs = config.durationOnMs;
+      }
 
       JsonVariantConst positionValue = top[FPSTR(_position)];
       if (!positionValue.isNull()) {
@@ -383,6 +421,8 @@ class WipeRevealUsermod : public Usermod {
       }
 
       config.options.durationMs = constrain(config.options.durationMs, 1, 60000);
+      config.durationOnMs = constrain(config.durationOnMs, 1, 60000);
+      config.durationOffMs = constrain(config.durationOffMs, 1, 60000);
       config.options.dropoffPx = constrain(config.options.dropoffPx, 0, 255);
 
       return configComplete;
@@ -393,7 +433,9 @@ class WipeRevealUsermod : public Usermod {
       oappend(F("let g=n=>document.getElementsByName('WipeReveal:'+n)[0];"));
       oappend(F("let v=n=>g(n)?g(n).value:null;"));
       oappend(F("let c=n=>g(n)&&g(n).type==='checkbox'?g(n).checked:false;"));
-      oappend(F("fetch(getURL('/json/state'),{method:'POST',body:JSON.stringify({WipeReveal:{trigger:true,position:v('position'),easing:v('easing'),style:v('style-on'),'duration-ms':parseInt(v('duration-ms')),'dropoff-px':parseInt(v('dropoff-px')),'always-animate':c('always-animate')}})});"));
+      oappend(F("let d=v('duration-on-ms');"));
+      oappend(F("if(d===null||d==='') d=v('duration-ms');"));
+      oappend(F("fetch(getURL('/json/state'),{method:'POST',body:JSON.stringify({WipeReveal:{trigger:true,position:v('position'),easing:v('easing'),style:v('style-on'),'duration-ms':parseInt(d||0),'dropoff-px':parseInt(v('dropoff-px')),'always-animate':c('always-animate')}})});"));
       oappend(F("}"));
       oappend(F("dd=addDropdown('")); oappend(String(FPSTR(_name)).c_str()); oappend(F("','")); oappend(String(FPSTR(_position)).c_str()); oappend(F("');"));
       oappend(F("addOption(dd,'Start','start');"));
@@ -423,7 +465,9 @@ class WipeRevealUsermod : public Usermod {
       oappend(F("addOption(dd,'Ease Out','ease-out');"));
       oappend(F("addOption(dd,'Ease In Out','ease-in-out');"));
       oappend(F("addInfo('")); oappend(String(FPSTR(_name)).c_str()); oappend(F(":")); oappend(String(FPSTR(_enabled)).c_str()); oappend(F("',1,'<button type=\"button\" onclick=\"triggerWipeReveal()\">Trigger Wipe Reveal</button>');"));
-      oappend(F("addInfo('")); oappend(String(FPSTR(_name)).c_str()); oappend(F(":")); oappend(String(FPSTR(_duration)).c_str()); oappend(F("',1,'Reveal animation duration in milliseconds.');"));
+      oappend(F("addInfo('")); oappend(String(FPSTR(_name)).c_str()); oappend(F(":")); oappend(String(FPSTR(_duration)).c_str()); oappend(F("',1,'Manual trigger duration in milliseconds.');"));
+      oappend(F("addInfo('")); oappend(String(FPSTR(_name)).c_str()); oappend(F(":")); oappend(String(FPSTR(_durationOn)).c_str()); oappend(F("',1,'Duration for the power-on (on style) animation.');"));
+      oappend(F("addInfo('")); oappend(String(FPSTR(_name)).c_str()); oappend(F(":")); oappend(String(FPSTR(_durationOff)).c_str()); oappend(F("',1,'Duration for the power-off (off style) animation.');"));
       oappend(F("addInfo('")); oappend(String(FPSTR(_name)).c_str()); oappend(F(":")); oappend(String(FPSTR(_dropoff)).c_str()); oappend(F("',1,'Soft edge width in pixels.');"));
       oappend(F("addInfo('")); oappend(String(FPSTR(_name)).c_str()); oappend(F(":")); oappend(String(FPSTR(_styleOn)).c_str()); oappend(F("',1,'Style used for manual trigger and power-on animation.');"));
       oappend(F("addInfo('")); oappend(String(FPSTR(_name)).c_str()); oappend(F(":")); oappend(String(FPSTR(_styleOff)).c_str()); oappend(F("',1,'Style used for power-off animation when always animate is enabled.');"));
@@ -444,6 +488,8 @@ const char WipeRevealUsermod::_styleOn[]  PROGMEM = "style-on";
 const char WipeRevealUsermod::_styleOff[] PROGMEM = "style-off";
 const char WipeRevealUsermod::_easing[]   PROGMEM = "easing";
 const char WipeRevealUsermod::_duration[] PROGMEM = "duration-ms";
+const char WipeRevealUsermod::_durationOn[] PROGMEM = "duration-on-ms";
+const char WipeRevealUsermod::_durationOff[] PROGMEM = "duration-off-ms";
 const char WipeRevealUsermod::_dropoff[]  PROGMEM = "dropoff-px";
 const char WipeRevealUsermod::_turnOn[]   PROGMEM = "turn-on";
 const char WipeRevealUsermod::_alwaysAnimate[] PROGMEM = "always-animate";

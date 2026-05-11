@@ -31,9 +31,9 @@ static uint8_t bounceScaleForDistance(uint16_t distance, uint16_t len, uint16_t 
   if (progress >= 0xFFFFU) return 255;
 
   const uint16_t extent = revealExtent(len, RevealCenter);
-  uint16_t dashLength = len / 8;
+  uint16_t dashLength = 40;
   if (dashLength < 2) dashLength = 2;
-  if (dashLength > 15) dashLength = 15;
+  if (dashLength > 50) dashLength = 50;
 
   if (progress < (6UL * 0xFFFFU) / 27U) { // first phase shoot out from center
     const uint16_t p = easedProgress(phaseProgress(progress, 0, 6), ease);
